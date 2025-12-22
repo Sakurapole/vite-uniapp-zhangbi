@@ -1,10 +1,10 @@
 <script setup>
-import { useRouter } from 'uniapp-router-next'
 import { reactive, ref } from 'vue'
 import { appName } from '@/settings/index.mjs'
 import { useUserStore } from '@/store/user'
 
-const router = useRouter()
+const userStore = useUserStore()
+
 const form = reactive({
   username: '',
   password: '',
@@ -24,61 +24,34 @@ async function handleLogin() {
     return
   }
 
-  isLoading.value = true
-  const baseUrl = 'https://ai.smartoptiks.cn/zhangbi/api/user/merchant/login'
+  try {
+    isLoading.value = true
 
-  uni.request({
-    url: baseUrl,
-    method: 'GET',
-    data: {
+    await userStore.login({
       username: form.username,
       password: form.password,
-    },
-    header: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    success: (res) => {
-      if (res.statusCode === 200) {
-        const { code, data, message } = res.data
-        if (code === 1) {
-          const { id: merchantId, token, username, role } = data
+    })
 
-          uni.setStorageSync('token', token)
-          uni.setStorageSync('merchantId', merchantId)
-          uni.setStorageSync('username', username)
-          uni.setStorageSync('role', role)
+    uni.showToast({ title: '登录成功', icon: 'success' })
 
-          // 同步到 pinia
-          const userStore = useUserStore()
-          userStore.setAuthData(token, merchantId, username, role)
+    setTimeout(() => {
+      uni.switchTab({
+        url: '/pages/user/index',
+        fail: (err) => {
+          console.error('跳转首页失败，可能是路径错误或非TabBar页:', err)
+        },
+      })
+    }, 500)
+  }
+  catch (error) {
+    console.error('登录失败:', error)
 
-          uni.showToast({ title: '登录成功', icon: 'success' })
-
-          setTimeout(() => {
-            uni.switchTab({
-              url: '/pages/index/index', // 确保路径与 pages.json 一致
-              fail: (err) => {
-                console.error('跳转失败，请检查路径:', err)
-                // 降级尝试
-                router.pushTab({ name: 'index' })
-              },
-            })
-          }, 500)
-        }
-        else {
-          uni.showToast({ title: message || '登录失败', icon: 'none' })
-        }
-      }
-      else {
-        uni.showToast({ title: `接口异常：${res.statusCode}`, icon: 'none' })
-      }
-    },
-    fail: (err) => {
-      console.error('请求失败:', err)
-      uni.showToast({ title: '网络请求失败', icon: 'none' })
-    },
-    complete: () => {
-      isLoading.value = false
-    },
-  })
+    const msg = error.detail || error.message || '登录失败，请检查网络或账号'
+    uni.showToast({ title: msg, icon: 'none' })
+  }
+  finally {
+    isLoading.value = false
+  }
 }
 
 function toggleAgreement() {
@@ -116,7 +89,6 @@ function toggleAgreement() {
           <input
             v-model="form.username"
             class="w-full h-14 pl-4 pt-4 pr-4 text-base text-slate-900 bg-transparent"
-            placeholder=""
             :disabled="isLoading"
             @focus="focusedField = 'username'"
             @blur="focusedField = ''"
@@ -136,7 +108,6 @@ function toggleAgreement() {
             v-model="form.password"
             type="password"
             class="w-full h-14 pl-4 pt-4 pr-4 text-base text-slate-900 bg-transparent"
-            placeholder=""
             :disabled="isLoading"
             @focus="focusedField = 'password'"
             @blur="focusedField = ''"
@@ -189,16 +160,13 @@ function toggleAgreement() {
     transform: translateY(0);
   }
 }
-
 .animate-fade-in-down {
   animation: fadeInDown 0.6s ease-out forwards;
 }
-
 input {
   outline: none;
   border: none;
 }
-
 button::after {
   border: none;
 }
