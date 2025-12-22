@@ -1,6 +1,7 @@
 <script setup>
 // #ifdef WEB
-import { updateShades } from '$unocss-preset-shades'
+
+import { updateShades } from '@root/helpers/unocss-preset-shades'
 // #endif
 
 onLaunch(() => {
