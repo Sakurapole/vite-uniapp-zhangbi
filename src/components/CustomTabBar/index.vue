@@ -1,12 +1,11 @@
 <script setup>
 const props = defineProps({
-  
+
   current: {
     type: Number,
     default: 0,
   },
 })
-
 
 const tabList = [
   {

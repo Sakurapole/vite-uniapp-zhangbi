@@ -82,7 +82,6 @@ async function fetchGoodsList() {
     total.value = res.total
   }
   catch (error) {
-    console.error('获取列表失败:', error)
     uni.showToast({ title: '加载失败', icon: 'none' })
   }
   finally {
@@ -98,7 +97,6 @@ function openAddPopup() {
 
 function openEditPopup(item) {
   isEditMode.value = true
-
   formData.value = {
     id: item.product_id,
     name: item.product_name,
@@ -107,13 +105,17 @@ function openEditPopup(item) {
     price: item.price,
     img: item.image_url,
     count: item.stock,
-
   }
   isPopupOpen.value = true
 }
 
 function closePopup() {
   isPopupOpen.value = false
+}
+
+function handleCategoryChange(e) {
+  const index = e.detail.value
+  formData.value.classify = categoryOptions[index]
 }
 
 async function handleSave() {
@@ -143,21 +145,15 @@ async function handleSave() {
       uni.showToast({ title: '修改成功', icon: 'success' })
     }
     else {
-      const res = await createProductAPI(payload)
-      if (res.ok) {
-        uni.showToast({ title: '新增成功', icon: 'success' })
-      }
-      else {
-        throw new Error('新增失败')
-      }
+      await createProductAPI(payload)
+      uni.showToast({ title: '新增成功', icon: 'success' })
     }
 
     closePopup()
     handleSearch()
   }
   catch (error) {
-    console.error('保存失败:', error)
-    const msg = error.detail?.[0]?.msg || error.message || '请求失败'
+    const msg = error.detail?.[0]?.msg || error.message || '操作失败'
     uni.showToast({ title: msg, icon: 'none' })
   }
 }
@@ -169,7 +165,7 @@ function handleDelete(id) {
     success: async (res) => {
       if (res.confirm) {
         try {
-          await deleteProductAPI(id, { role: userStore.userInfo.role, merchantId: userStore.userInfo.merchantId })
+          await deleteProductAPI(id)
           uni.showToast({ title: '已删除', icon: 'success' })
           handleSearch()
         }
@@ -290,10 +286,10 @@ function loadMore() {
               </view>
             </view>
             <view class="flex justify-end gap-2 mt-3">
-              <button class="bg-gray-100 hover:bg-gray-200 text-gray-600 text-[10px] px-3 py-1.5 rounded-full flex items-center gap-1 border-0 transition-colors" @click.stop="openEditPopup(item)">
+              <button class="bg-gray-100 hover:bg-gray-200 text-gray-600 text-[10px] px-3 py-1.5  flex items-center gap-1 border-0 transition-colors" @click.stop="openEditPopup(item)">
                 📝 编辑
               </button>
-              <button class="bg-red-50 hover:bg-red-100 text-red-500 text-[10px] px-3 py-1.5 rounded-full flex items-center gap-1 border-0 transition-colors" @click.stop="handleDelete(item.product_id)">
+              <button class="bg-red-50 hover:bg-red-100 text-red-500 text-[10px] px-3 py-1.5 flex items-center gap-1 border-0 transition-colors" @click.stop="handleDelete(item.product_id)">
                 🗑️ 删除
               </button>
             </view>
@@ -309,74 +305,94 @@ function loadMore() {
       </view>
     </view>
 
-    <view v-if="isPopupOpen" class="fixed inset-0 z-50 flex items-center justify-center p-4">
-      <view class="fixed inset-0 bg-slate-900/60 backdrop-blur-sm" @click="closePopup"></view>
-      <view class="bg-white w-full max-w-sm rounded-3xl shadow-2xl flex flex-col max-h-[85vh] relative z-10 overflow-hidden animate-pop-in">
-        <view :class="isEditMode ? 'bg-slate-800' : 'bg-indigo-600'" class="p-4 pt-5 pb-8 flex justify-between items-center text-white relative transition-colors duration-300">
-          <h3 class="font-bold text-xl relative z-10">
+    <view v-if="isPopupOpen" class="fixed inset-0 z-[100] flex items-center justify-center p-4">
+      <view class="absolute inset-0 bg-slate-900/60 backdrop-blur-sm" @click="closePopup"></view>
+
+      <view class="bg-white w-full max-w-sm h-[80vh] rounded-3xl shadow-2xl flex flex-col relative z-[101] overflow-hidden animate-pop-in">
+        <view :class="isEditMode ? 'bg-slate-800' : 'bg-indigo-600'" class="p-4 pt-5 pb-8 flex justify-between items-center text-white relative transition-colors duration-300 flex-none z-10">
+          <h3 class="font-bold text-xl">
             {{ isEditMode ? '编辑商品' : '录入新商品' }}
           </h3>
-          <button class="text-white/70 p-1 hover:text-white z-10" @click="closePopup">
+          <view class="text-white/70 p-1 hover:text-white cursor-pointer" @click="closePopup">
             <view class="i-carbon-close text-2xl"></view>
-          </button>
+          </view>
         </view>
 
-        <view class="bg-white -mt-4 rounded-t-3xl px-5 pt-6 pb-5 overflow-y-auto space-y-4 flex-1">
-          <div class="flex justify-center mb-4">
-            <div v-if="formData.img" class="relative w-28 h-28 rounded-2xl overflow-hidden border-2 border-indigo-100 shadow-md">
-              <image :src="formData.img" class="w-full h-full object-cover" />
-              <button class="absolute top-1 right-1 bg-black/60 text-white w-6 h-6 flex items-center justify-center rounded-full" @click="removeImage">
-                ✕
-              </button>
-            </div>
-            <div v-else class="w-28 h-28 rounded-2xl border-2 border-dashed border-gray-300 bg-gray-50 flex flex-col items-center justify-center text-gray-400 cursor-pointer active:scale-95 transition-all" @click="handleUploadImage">
-              <view class="text-2xl mb-1">
-                📷
+        <scroll-view
+          scroll-y
+          class="flex-1 h-0 w-full bg-white -mt-4 rounded-t-3xl relative z-20"
+          :enable-flex="true"
+        >
+          <view class="px-5 pt-6 pb-5">
+            <view class="flex justify-center mb-4">
+              <view v-if="formData.img" class="relative w-28 h-28 rounded-2xl overflow-hidden border-2 border-indigo-100 shadow-md">
+                <image :src="formData.img" class="w-full h-full object-cover" />
+                <view class="absolute top-1 right-1 bg-black/60 text-white w-6 h-6 flex items-center justify-center rounded-full z-10" @click.stop="removeImage">
+                  ✕
+                </view>
               </view>
-              <span class="text-xs font-bold">上传封面</span>
-            </div>
-          </div>
-
-          <div class="space-y-3">
-            <div>
-              <label class="text-xs text-gray-500 font-bold ml-1">商品名称</label>
-              <input v-model="formData.name" class="modern-input" placeholder="请输入名称" />
-            </div>
-
-            <div class="flex gap-3">
-              <div class="flex-1">
-                <label class="text-xs text-gray-500 font-bold ml-1">销售价格</label>
-                <input v-model="formData.price" type="number" class="modern-input" placeholder="0.00" />
-              </div>
-              <div class="flex-1">
-                <label class="text-xs text-gray-500 font-bold ml-1">库存数量</label>
-                <input v-model="formData.count" type="number" class="modern-input" placeholder="0" />
-              </div>
-            </div>
-
-            <div class="relative">
-              <label class="text-xs text-gray-500 font-bold ml-1">所属分类</label>
-              <select v-model="formData.classify" class="modern-input appearance-none bg-transparent">
-                <option value="" disabled>
-                  请选择分类
-                </option>
-                <option v-for="opt in categoryOptions" :key="opt" :value="opt">
-                  {{ opt }}
-                </option>
-              </select>
-              <view class="absolute right-3 top-[30px] text-gray-400 pointer-events-none">
-                ▼
+              <view v-else class="w-28 h-28 rounded-2xl border-2 border-dashed border-gray-300 bg-gray-50 flex flex-col items-center justify-center text-gray-400 cursor-pointer active:scale-95 transition-all" @click="handleUploadImage">
+                <view class="text-2xl mb-1">
+                  📷
+                </view>
+                <text class="text-xs font-bold">
+                  上传封面
+                </text>
               </view>
-            </div>
+            </view>
 
-            <div>
-              <label class="text-xs text-gray-500 font-bold ml-1">商品描述</label>
-              <textarea v-model="formData.info" class="modern-input h-20 py-2 resize-none" placeholder="输入详情..."></textarea>
-            </div>
-          </div>
-        </view>
+            <view class="space-y-3">
+              <view>
+                <text class="text-xs text-gray-500 font-bold ml-1">
+                  商品名称
+                </text>
+                <input v-model="formData.name" :cursor-spacing="20" class="modern-input" placeholder="请输入名称" />
+              </view>
 
-        <view class="p-5 border-t border-gray-50 bg-gray-50 flex gap-3">
+              <view class="flex gap-3">
+                <view class="flex-1">
+                  <text class="text-xs text-gray-500 font-bold ml-1">
+                    销售价格
+                  </text>
+                  <input v-model="formData.price" type="digit" :cursor-spacing="20" class="modern-input" placeholder="0.00" />
+                </view>
+                <view class="flex-1">
+                  <text class="text-xs text-gray-500 font-bold ml-1">
+                    库存数量
+                  </text>
+                  <input v-model="formData.count" type="number" :cursor-spacing="20" class="modern-input" placeholder="0" />
+                </view>
+              </view>
+
+              <view class="relative">
+                <text class="text-xs text-gray-500 font-bold ml-1">
+                  所属分类
+                </text>
+                <picker mode="selector" :range="categoryOptions" @change="handleCategoryChange">
+                  <view class="modern-input flex items-center justify-between">
+                    <text :class="formData.classify ? 'text-gray-800' : 'text-gray-400'">
+                      {{ formData.classify || '请选择分类' }}
+                    </text>
+                    <text class="text-gray-400">
+                      ▼
+                    </text>
+                  </view>
+                </picker>
+              </view>
+
+              <view>
+                <text class="text-xs text-gray-500 font-bold ml-1">
+                  商品描述
+                </text>
+                <textarea v-model="formData.info" :cursor-spacing="50" class="modern-input h-20 py-2" placeholder="输入详情..." />
+              </view>
+
+              <view class="h-4"></view>
+            </view>
+          </view>
+        </scroll-view>
+
+        <view class="p-5 border-t border-gray-50 bg-gray-50 flex gap-3 z-30 flex-none">
           <button class="flex-1 py-3 rounded-xl bg-white border border-gray-200 text-gray-600 font-bold text-sm shadow-sm active:scale-95 transition-transform" @click="closePopup">
             取消
           </button>
@@ -396,8 +412,32 @@ function loadMore() {
 </template>
 
 <style scoped>
+/* 替换 input 默认样式，减小 padding 适应手机屏 */
 .modern-input {
-  @apply w-full bg-gray-100 text-gray-800 text-sm font-bold rounded-xl px-4 py-3 outline-none border-2 border-transparent focus:border-indigo-200 focus:bg-white transition-all mt-1;
+  width: 100%;
+  background-color: #f3f4f6; /* bg-gray-100 */
+  color: #1f2937; /* text-gray-800 */
+  font-size: 0.875rem; /* text-sm */
+  font-weight: 700; /* font-bold */
+  border-radius: 0.75rem; /* rounded-xl */
+  padding: 0.6rem 0.8rem; /* 调整为更适合的高度 */
+  border: 2px solid transparent;
+  margin-top: 0.25rem;
+  transition: all 0.2s;
+  box-sizing: border-box; /* 关键 */
+  height: 46px; /* 显式高度 */
+}
+
+/* textarea 特殊处理 */
+textarea.modern-input {
+  height: 80px;
+  line-height: 1.4;
+}
+
+.modern-input:focus-within,
+.modern-input:focus {
+  background-color: #ffffff;
+  border-color: #c7d2fe; /* border-indigo-200 */
 }
 
 @keyframes pop-in {
@@ -415,7 +455,6 @@ function loadMore() {
   animation: pop-in 0.2s cubic-bezier(0.16, 1, 0.3, 1) forwards;
 }
 
-/* 隐藏滚动条 */
 ::-webkit-scrollbar {
   display: none;
   width: 0;
