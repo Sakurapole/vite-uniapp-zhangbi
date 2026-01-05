@@ -1,4 +1,5 @@
-/* eslint-disable no-undef */
+import request from '@/utils/request.js'
+
 const baseUrl = import.meta.env.VITE_API_BASE_URL
 
 export function createTeamAPI(data) {
@@ -46,13 +47,13 @@ export function createTeamAPI(data) {
 /**
  * 导游端 - 修改队伍状态
  * @param {string} teamId 队伍ID
- * @param {number} statusId 状态ID (0:未开始, 1:进行中, 2:已结束)
+ * @param {number} statusId 状态ID (1:未开始, 2:进行中, 3:已结束)
  */
 export function updateTeamStatusAPI(teamId, statusId) {
   const statusMap = {
-    0: '未开始',
-    1: '进行中',
-    2: '已结束',
+    1: '未开始',
+    2: '进行中',
+    3: '已结束',
   }
 
   return request({
@@ -64,7 +65,13 @@ export function updateTeamStatusAPI(teamId, statusId) {
     },
   })
 }
-// TODO
-export function getTeamListAPI() {
-  console.log('todo:拿队伍列表')
+export function getTeamListAPI(params = {}) {
+  return request({
+    url: '/api/v1/guide/teams',
+    method: 'GET',
+    params: {
+      page: params.page || 1,
+      size: params.size || 20,
+    },
+  })
 }

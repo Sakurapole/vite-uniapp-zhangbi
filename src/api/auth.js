@@ -1,5 +1,6 @@
-const baseUrl = import.meta.env.VITE_API_BASE_URL
+import request from '@/utils/request'
 
+const baseUrl = import.meta.env.VITE_API_BASE_URL
 export function loginAPI(data) {
   return new Promise((resolve, reject) => {
     uni.request({
@@ -31,5 +32,11 @@ export function loginAPI(data) {
         reject(err)
       },
     })
+  })
+}
+export function getMeAPI() {
+  return request({
+    url: '/auth/me',
+    method: 'GET',
   })
 }
