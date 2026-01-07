@@ -1,44 +1,49 @@
 import { defineStore } from 'pinia'
 import { io } from 'socket.io-client'
 import { useUserStore } from '@/store/user'
-import { useGameStore } from './game'
+import { useGameStore } from './game' // 引入游戏数据专用 Store
 
 export const useSocketStore = defineStore('socket', {
   state: () => ({
     socket: null,
     isConnected: false,
-    connectError: null,
-    isGameStarted: false, // 标记游戏是否开始
-    role: '', // 玩家角色
-    currentTask: null, // 当前任务详情 (cur_task)
-    currentTaskId: '', // 当前任务ID
 
-    // 🆕 新增：功能面板开关 (对应参考代码的 style.display = 'block')
-    showAiPanel: false, // 是否显示 AI 助手
-    showNpcPanel: false, // 是否显示 NPC 对话
+    // --- 🎮 游戏核心状态 ---
+    isGameStarted: false,
+    role: '',
+    currentTask: null,
+    currentTaskId: '',
+
+    // --- 🤖 AI/NPC 对话状态 (流式) ---
+    showAiPanel: false, // AI面板开关
+    showNpcPanel: false, // NPC面板开关
+    isAiResponding: false, // AI 是否正在打字
+    isNpcResponding: false, // NPC 是否正在打字
+
+    // --- 📷 图片上传/识别状态 ---
+    uploadStatus: 'idle', // idle(空闲), verifying(识别中), success(成功), fail(失败)
   }),
 
   actions: {
-
+    // --- 连接初始化 ---
     connect() {
       const userStore = useUserStore()
-
       if (this.socket?.connected) {
         console.log('⚡ Socket 已经连接，跳过初始化')
         return
       }
 
+      // TODO: 替换为真实服务器地址
       const url = ''
 
-      console.log('🚀 正在连接 Socket, 目标:', url || '默认路径')
+      console.log('🚀 正在连接 Socket, Token:', userStore.token ? '已携带' : '无')
 
       this.socket = io(url, {
         path: '/socket.io',
         transports: ['websocket', 'polling'],
         reconnection: true,
-        reconnectionAttempts: 5,
         auth: {
-          token: userStore.token,
+          token: userStore.token, // 必传 Token
         },
       })
 
@@ -50,25 +55,25 @@ export const useSocketStore = defineStore('socket', {
         this.socket.disconnect()
         this.socket = null
         this.isConnected = false
-        console.log('🔌 Socket 主动断开')
       }
     },
 
+    // --- 🎧 核心监听器设置 ---
     setupBaseListeners() {
       if (!this.socket)
         return
       const gameStore = useGameStore()
+      const userStore = useUserStore()
 
+      // 1. 基础连接事件
       this.socket.on('connect', () => {
         this.isConnected = true
-        console.log('✅ [Socket] 底层连接成功! ID:', this.socket.id)
+        console.log('✅ [Socket] 连接成功 ID:', this.socket.id)
 
-        if (this.currentTeamId && this.userStore?.userId) {
-          console.log('🔄 检测到断线重连，正在自动恢复身份...')
-          this.joinTeam(this.currentTeamId, {
-            userId: this.userStore.userId,
-            userName: this.userStore.userName,
-          })
+        // 断线重连逻辑：重新加入房间
+        if (gameStore.currentTeamId && userStore.userId) {
+          console.log('🔄 断线重连，尝试重新入房...')
+          this.joinRoom(gameStore.currentTeamId)
         }
       })
 
@@ -77,193 +82,250 @@ export const useSocketStore = defineStore('socket', {
         console.log('❌ [Socket] 断开连接')
       })
 
-      this.socket.on('game:connected', (data) => {
-        console.log(`📡 [Socket] 收到业务连接确认 SID: ${data.sid}`)
-      })
-
+      // 2. 房间与成员管理
       this.socket.on('game:room_joined', (data) => {
-        console.log('🏠 [Socket] 我已加入房间:', data)
-        gameStore.setRoomInfo(data)
-        uni.showToast({ title: '加入房间成功', icon: 'success' })
-      })
-
-      this.socket.on('game:room_left', (data) => {
-        console.log('👋 [Socket] 我已离开房间', data)
-        gameStore.resetState()
+        console.log('🏠 加入房间成功:', data)
+        gameStore.setRoomInfo(data) // 同步到 GameStore
+        uni.showToast({ title: '已加入房间', icon: 'success' })
       })
 
       this.socket.on('team:member_joined', (data) => {
-        console.log('👤 [Socket] 新成员加入:', data)
-
-        const memberName = data.username || '未知用户'
-        uni.showToast({ title: `${memberName} 加入了队伍`, icon: 'none' })
-
-        if (data.all_members && typeof gameStore.updateMembers === 'function') {
+        console.log('👤 新成员加入:', data)
+        if (data.all_members)
           gameStore.updateMembers(data.all_members)
-        }
-        else if (data.members_count) {
-          gameStore.updateMemberCount(data.members_count)
-        }
       })
 
       this.socket.on('team:member_left', (data) => {
-        console.log('👋 [Socket] 成员离开:', data)
-
-        const memberName = data.username || '有人'
-        uni.showToast({ title: `${memberName} 离开了队伍`, icon: 'none' })
-
-        if (data.all_members && typeof gameStore.updateMembers === 'function') {
+        console.log('👋 成员离开:', data)
+        if (data.all_members)
           gameStore.updateMembers(data.all_members)
-        }
       })
 
+      // 3. 游戏流程控制
       this.socket.on('game:game_created', (data) => {
-        console.log('📝 [Socket] 剧本已创建:', data)
-        if (data.game_id) {
+        console.log('📝 剧本已生成:', data)
+        if (data.game_id)
           gameStore.gameId = data.game_id
-        }
-        uni.showToast({ title: '剧本已就绪', icon: 'success' })
+        uni.showToast({ title: '剧本就绪', icon: 'success' })
       })
 
       this.socket.on('game_started', (data) => {
-        console.log('🚀 [Socket] 收到游戏开始信号:', data)
-
-        // 1. 调用更新方法，保存数据
+        console.log('🚀 游戏开始:', data)
         this.handleGameStarted(data)
-
-        // 2. 通知 UI (例如跳转页面)
         uni.showToast({ title: '游戏开始！', icon: 'success' })
-
-        // 建议：跳转到专门的游戏游玩页面
         uni.navigateTo({ url: '/pages/game/play' })
       })
 
-      this.socket.on('game:error', (err) => {
-        console.error('🔥 [Socket服务端报错]', err)
-        uni.showModal({
-          title: '服务端拒绝',
-          content: JSON.stringify(err),
-          showCancel: false,
-        })
-      })
-
-      this.socket.on('game:message', (data) => {
-        console.log(`💬 [消息] ${data.user_id}: ${data.message}`)
-      })
-
-      this.socket.on('game:event', (data) => {
-        console.log('🎮 [事件]', data)
-
-        uni.showToast({ title: `事件: ${data.event_type}`, icon: 'none' })
-      })
-
       this.socket.on('game:new_task', (data) => {
-        console.log('📦 [Socket] 收到新任务:', data)
+        console.log('📦 新任务:', data)
+        // 更新任务数据
         if (data.player_state) {
           gameStore.updateGameState(data.player_state)
         }
         else if (data.task) {
-          gameStore.currentTaskId = data.task_id
-          gameStore.currentTask = data.task
+          gameStore.updateTask(data.task)
         }
+
+        // 弹窗提示
+        uni.vibrateLong()
         uni.showModal({
           title: '新任务',
-          content: data.task_msg || '你收到了一个新的任务',
+          content: data.task_msg || '任务目标已更新',
           showCancel: false,
+          confirmText: '收到',
         })
+      })
+
+      // 4. 任务进度与机制反馈
+      this.socket.on('game:mechanism_complete', (data) => {
+        console.log('⚙️ 机制达成:', data)
+        // 同步到 GameStore 的进度里
+        gameStore.recordMechanism(data.task_id, data.sub_task_id, data.completed_mechanism)
+
+        uni.showToast({ title: `${data.completed_mechanism || '操作'} 完成`, icon: 'success' })
+      })
+
+      this.socket.on('game:task_complete', (data) => {
+        console.log('✅ 任务完成:', data)
+        uni.showToast({ title: '当前任务完成！', icon: 'success' })
+        // 如果有子任务ID，记录完成状态
+        if (data.sub_task_id) {
+          gameStore.completeSubTask(data.task_id, data.sub_task_id)
+        }
+      })
+
+      this.socket.on('game:task_failed', (data) => {
+        console.error('❌ 任务失败:', data)
+        uni.showModal({
+          title: '任务失败',
+          content: data.task_msg || '请重试',
+          showCancel: false,
+          confirmColor: '#DD524D',
+        })
+      })
+
+      // ==========================================
+      // 5. 🤖 AI 助手流式对话 (Streaming)
+      // ==========================================
+
+      this.socket.on('game:assistant_stream_start', () => {
+        this.isAiResponding = true
+        // 通知 UI 清空输入框或显示 loading
+        uni.$emit('ai-chat-start')
+      })
+
+      this.socket.on('game:assistant_stream_chunk', (data) => {
+        // ⚡️ 核心：实时将文字推送到前端界面
+        uni.$emit('ai-chat-stream', data.chunk)
+      })
+
+      this.socket.on('game:assistant_stream_end', (data) => {
+        this.isAiResponding = false
+        console.log('🤖 AI响应结束, Session:', data.session_id)
+        uni.$emit('ai-chat-end', data)
+      })
+
+      // ==========================================
+      // 6. 🎭 NPC 剧情流式对话
+      // ==========================================
+
+      this.socket.on('game:npc_stream_start', () => {
+        this.isNpcResponding = true
+        uni.$emit('npc-chat-start')
+      })
+
+      this.socket.on('game:npc_stream_chunk', (data) => {
+        uni.$emit('npc-chat-stream', data.chunk)
+      })
+
+      this.socket.on('game:npc_stream_end', (data) => {
+        this.isNpcResponding = false
+        console.log('🎭 NPC响应结束', data)
+
+        // 剧情触发任务完成
+        if (data.task_completed || data.action === 'TRIGGER_SUBTASK') {
+          uni.showToast({ title: '剧情任务触发！', icon: 'success' })
+        }
+
+        uni.$emit('npc-chat-end', data)
+      })
+
+      this.socket.on('game:npc_waiting_image', (data) => {
+        // NPC 索要图片，弹窗提示用户去拍照
+        uni.showModal({
+          title: 'NPC 请求',
+          content: data.message,
+          confirmText: '去拍照',
+          success: (res) => {
+            if (res.confirm)
+              uni.$emit('trigger-camera')
+          },
+        })
+      })
+
+      // ==========================================
+      // 7. 📷 图片识别流程
+      // ==========================================
+
+      this.socket.on('game:image_verify_start', () => {
+        this.uploadStatus = 'verifying'
+        uni.showLoading({ title: 'AI 正在识别...' })
+      })
+
+      this.socket.on('game:image_verify_result', (data) => {
+        uni.hideLoading()
+        this.uploadStatus = data.success ? 'success' : 'fail'
+
+        if (data.success) {
+          uni.showToast({ title: '✅ 识别成功', icon: 'success' })
+        }
+        else {
+          uni.showModal({
+            title: '识别不匹配',
+            content: `识别结果：${data.identified_attraction || '未知'}\n目标要求：${data.target_attraction || '未知'}`,
+            showCancel: false,
+          })
+        }
+      })
+
+      this.socket.on('game:image_verify_error', (data) => {
+        uni.hideLoading()
+        this.uploadStatus = 'fail'
+        uni.showToast({ title: `识别出错: ${data.error}`, icon: 'none' })
+      })
+
+      // 8. 错误处理
+      this.socket.on('game:error', (err) => {
+        console.error('🔥 服务端报错:', err)
+        uni.showToast({ title: err.message || '未知错误', icon: 'none' })
       })
     },
 
-    /**
-     * 加入队伍房间
-     * @param {string} teamId 队伍ID
-     */
+    // --- 业务操作 Actions ---
+
+    handleGameStarted(data) {
+      const gameStore = useGameStore()
+
+      this.isGameStarted = true
+      this.role = data.role || '游客'
+      this.currentTaskId = data.cur_task_id
+      this.currentTask = data.cur_task
+
+      // 开启功能面板
+      this.showAiPanel = true
+      this.showNpcPanel = true
+
+      // 同步数据到 GameStore (推荐做法：让 GameStore 管理所有游戏数据)
+      gameStore.updateGameState({
+        role: this.role,
+        cur_task: this.currentTask,
+        cur_task_id: this.currentTaskId,
+      })
+    },
+
+    // 加入房间
     joinRoom(teamId) {
       const userStore = useUserStore()
       if (!this.checkConnection())
         return
 
-      console.log('📤 [客户端] 请求加入房间:', teamId, userStore.userInfo.id)
-
       this.socket.emit('game:join_room', {
         team_id: teamId,
-        user_id: userStore.userInfo.id,
-        username: userStore.userInfo.username || userStore.userInfo.name || '导游',
+        user_id: userStore.userInfo.id, // 确保是 ID
+        username: userStore.userInfo.username || '玩家',
       })
-      console.log(userStore.userInfo.user_id, userStore.userInfo.id)
     },
 
-    /**
-     * 导游为队伍选择剧本
-     * @param {string} teamId 队伍ID (必须)
-     * @param {string} scriptId 剧本ID (必须)
-     */
+    // 选剧本
     selectScript(teamId, scriptId) {
       if (!this.checkConnection())
         return
-
-      console.log(`📤 [客户端] 选择剧本: Team=${teamId}, Script=${scriptId}`)
-
       this.socket.emit('game:select_script', {
         team_id: teamId,
         script_id: scriptId,
         timestamp: new Date().toISOString(),
       })
-      console.log('✅ [客户端] 选择剧本请求已发送')
     },
 
-    handleGameStarted(data) {
-      // 保存核心状态
-      this.isGameStarted = true
-      this.gameId = data.game_id
-      this.role = data.role || '游客' // 对应 document.getElementById...textContent
-      this.currentTaskId = data.cur_task_id
-      this.currentTask = data.cur_task // 对应 updateTaskInfo
-
-      // 开启功能面板 (参考代码逻辑：游戏开始后这些面板可用)
-      this.showAiPanel = true
-      this.showNpcPanel = true
-
-      console.log('✅ [Store] 游戏状态已同步:', this.currentTask)
-    },
-
-    /**
-     * 导游开始游戏
-     * @param {string} id 游戏ID 或 队伍ID
-     */
+    // 开始游戏
     startGame(id) {
       if (!this.checkConnection())
         return
-
-      // 优先用传入的 id，没有则用 store 里的
-      const targetId = id || this.gameId
+      const gameStore = useGameStore()
+      const targetId = id || gameStore.gameId
 
       if (!targetId) {
-        uni.showToast({ title: '未找到 GameID，请先分配剧本', icon: 'none' })
+        uni.showToast({ title: '未找到 GameID', icon: 'none' })
         return
       }
 
-      console.log('🚀 [客户端] 发送开始指令, GameID:', targetId)
-
-      this.socket.emit('game:start', {
-        game_id: targetId,
-        timestamp: new Date().toISOString(),
-      })
+      this.socket.emit('game:start', { game_id: targetId })
     },
 
-    /**
-     * 通用发送方法
-     */
-    emit(event, data) {
-      if (this.checkConnection()) {
-        this.socket.emit(event, data)
-      }
-    },
-
+    // 辅助检查
     checkConnection() {
       if (!this.socket || !this.isConnected) {
         uni.showToast({ title: '服务器未连接', icon: 'none' })
-        console.warn('⚠️ 尝试发送消息但 Socket 未连接')
         return false
       }
       return true

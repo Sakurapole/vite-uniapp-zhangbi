@@ -1,6 +1,6 @@
 <script setup>
 import { onPullDownRefresh, onReachBottom, onShow } from '@dcloudio/uni-app'
-import { onMounted, onUnmounted, ref, watch } from 'vue'
+import { ref, watch } from 'vue'
 import { getTeamListAPI } from '@/api/team'
 import CustomTabBar from '@/components/CustomTabBar/index.vue'
 import { useGameStore } from '@/store/game'
@@ -16,12 +16,12 @@ const page = ref(1)
 const pageSize = ref(20)
 const total = ref(0)
 const isLoading = ref(false)
+const isRefreshing = ref(false)
 
-// Dashboard 数据保持不变
+// Dashboard 模拟数据
 const flowList = ref([
   { id: 1, teamName: '飞虎队', peopleCount: 5, taskName: '寻找钥匙', arrivalTime: 3, tags: [{ label: '⚠️ 过敏', type: 'warning' }] },
   { id: 2, teamName: '探险队', peopleCount: 3, taskName: '购买补给', arrivalTime: 12, tags: [] },
-  { id: 3, teamName: '研学团', peopleCount: 12, taskName: '参观壁画', arrivalTime: 25, tags: [{ label: '👨‍🦽 轮椅', type: 'info' }] },
 ])
 
 const scriptOptions = [
@@ -30,171 +30,208 @@ const scriptOptions = [
   { id: 'script_003', name: '消失的宝藏', desc: '沉浸式角色扮演任务' },
 ]
 
-// --- 🟢 核心修复 1：Socket 监听同步逻辑 ---
-
+// --- Socket 监听 ---
 function attachPageListeners(socket) {
-  // 防止重复监听
   socket.off('game:game_created')
   socket.off('game_started')
 
-  // A. 监听剧本就绪 (后端 AI 生成完毕)
   socket.on('game:game_created', (data) => {
-    console.log('✅ [Socket] 收到剧本数据:', data)
     uni.hideLoading()
-
-    // ⚡️ 重点：在本地列表中找到该队伍，并强制更新属性
     const targetTeam = teamList.value.find(t => t.team_id === data.team_id)
     if (targetTeam) {
-      // 这里的赋值是响应式的，界面应该会变
       targetTeam.current_status = 1
       targetTeam.game_id = data.game_id
-      console.log('🔄 [页面状态] 已更新队伍GameID:', targetTeam.game_id)
     }
   })
 
-  // B. 监听游戏开始
   socket.on('game_started', (data) => {
     const targetTeam = teamList.value.find(t => t.team_id === data.team_id)
     if (targetTeam) {
-      targetTeam.current_status = 2 // 变为进行中
+      targetTeam.current_status = 2
     }
   })
 }
 
-// 监听 Store 中的 Socket 连接
 watch(() => gameStore.socket, (newSocket) => {
   if (newSocket && newSocket.connected) {
     attachPageListeners(newSocket)
   }
 }, { immediate: true })
 
-// --- 生命周期 ---
-
 onShow(() => {
-  const token = uni.getStorageSync('token') // 确保拿到token
-  if (token) {
-    gameStore.initSocket(token) // 👈 记得传 token
-  }
+  const token = uni.getStorageSync('token')
+  if (token)
+    gameStore.initSocket(token)
+  if (currentView.value === 'teams')
+    fetchTeamList(true, true)
 })
 
-onUnmounted(() => {
-  if (gameStore.socket) {
-    gameStore.socket.off('game:game_created')
-    gameStore.socket.off('game_started')
+// --- 🟢 核心逻辑：导游任务管理 ---
+
+/**
+ * 判断是否有待确认机制
+ */
+function getPendingConfirmMechanism(teamId) {
+  if (gameStore.currentTeamId !== teamId)
+    return null
+  const task = gameStore.currentTask
+  if (!task)
+    return null
+
+  // 1. 主任务检查
+  const mainMechanisms = task.task_complete_mechanisms || []
+  const confirmMech = mainMechanisms.find(m => m.mechanism_name === 'STAFF_CONFIRM')
+  if (confirmMech) {
+    const isDone = gameStore.completedMechanisms[task.task_id]?.[confirmMech.mechanism_name]
+    if (!isDone)
+      return { ...confirmMech, isMain: true }
   }
-})
 
-// --- 🟢 核心修复 2：业务方法 ---
+  // 2. 子任务检查
+  if (gameStore.selectedSubTaskId) {
+    const subTask = task.sub_tasks?.find(s => s.sub_task_id === gameStore.selectedSubTaskId)
+    if (subTask && subTask.task_complete_mechanism) {
+      const subConfirmMech = subTask.task_complete_mechanism.find(m => m.mechanism_name === 'STAFF_CONFIRM')
+      if (subConfirmMech) {
+        const isSubDone = gameStore.completedMechanisms[task.task_id]?.[subTask.sub_task_id]?.STAFF_CONFIRM
+        if (!isSubDone)
+          return { ...subConfirmMech, isMain: false }
+      }
+    }
+  }
+  return null
+}
 
+/**
+ * 🟢 点击“任务管理”按钮 (弹窗模式)
+ */
+function handleTaskManage(team) {
+  // 必须先加入房间
+  if (!isJoined(team.team_id)) {
+    uni.showToast({ title: '请先进入房间', icon: 'none' })
+    return
+  }
+
+  const pendingMech = getPendingConfirmMechanism(team.team_id)
+  const currentTaskName = gameStore.currentTask?.game_name || '当前任务'
+
+  // 构建菜单项
+  const itemList = []
+  if (pendingMech) {
+    itemList.push(`✅ 确认完成：${currentTaskName}`)
+  }
+  else {
+    itemList.push(`⚠️ 强制完成：${currentTaskName}`) // 允许导游强制跳过
+  }
+
+  uni.showActionSheet({
+    itemList,
+    itemColor: pendingMech ? '#10B981' : '#F59E0B',
+    success: (res) => {
+      if (res.tapIndex === 0) {
+        uni.showModal({
+          title: '操作确认',
+          content: `确定手动通过节点：\n《${currentTaskName}》？`,
+          success: (modalRes) => {
+            if (modalRes.confirm) {
+              const mechType = pendingMech ? pendingMech.mechanism_name : 'STAFF_CONFIRM'
+              const isMain = pendingMech ? pendingMech.isMain : true
+              gameStore.submitTask({}, mechType, isMain)
+            }
+          },
+        })
+      }
+    },
+  })
+}
+
+/**
+ * 进入游戏控制台
+ */
+function handleOpenConsole(team) {
+  if (!isJoined(team.team_id)) {
+    uni.showToast({ title: '请先点击“进入房间”', icon: 'none' })
+    return
+  }
+  uni.navigateTo({ url: '/pages/game/play' })
+}
+
+// --- 常规业务方法 ---
 function isJoined(teamId) {
   return gameStore.currentTeamId === teamId
 }
 
 function handleJoinRoom(team) {
-  uni.showLoading({ title: '正在连接...', mask: true })
+  uni.showLoading({ title: '连接中...', mask: true })
   gameStore.joinTeam(team.team_id, {
-    userId: userStore.userId, // 确保这是 ID
+    userId: userStore.userId,
     userName: userStore.userName,
-  }).then(() => {
-    uni.hideLoading()
-  }).catch(() => {
-    uni.hideLoading()
-  })
+  }).then(() => uni.hideLoading()).catch(() => uni.hideLoading())
 }
 
 function handleAssignScript(team) {
   uni.showActionSheet({
     itemList: scriptOptions.map(s => s.name),
     success: async (res) => {
-      const selected = scriptOptions[res.tapIndex]
-      // 发送指令
-      gameStore.selectScript(team.team_id, selected.id)
-      // 开启 Loading
-      uni.showLoading({ title: 'AI正在生成剧本...', mask: true })
+      gameStore.selectScript(team.team_id, scriptOptions[res.tapIndex].id)
+      uni.showLoading({ title: 'AI生成中...', mask: true })
     },
   })
 }
 
-// 🔥 修复重点：handleStartGame
 function handleStartGame(team) {
-  // 1. 重新在响应式列表中查找该队伍（防止传入的 team 参数是旧的引用）
   const liveTeam = teamList.value.find(t => t.team_id === team.team_id) || team
+  const targetGameId = liveTeam.game_id || (gameStore.currentTeamId === liveTeam.team_id ? gameStore.gameId : null)
 
-  // 2. 多重获取 ID：先从列表对象取，取不到就去 Store 里看看是不是刚好是当前这个
-  let targetGameId = liveTeam.game_id
-
-  // 补救措施：如果列表没更新，但 Store 里刚好收到了这个队伍的 GameID
-  if (!targetGameId && gameStore.currentTeamId === liveTeam.team_id && gameStore.gameId) {
-    targetGameId = gameStore.gameId
-  }
-
-  console.log('🔍 [Debug] 尝试启动，GameID:', targetGameId)
-
-  if (!targetGameId) {
-    uni.showToast({ title: '剧本ID未同步，请刷新或重试', icon: 'none' })
-    // 可选：在这里静默刷新一下列表 fetchTeamList(false, true)
-    return
-  }
+  if (!targetGameId)
+    return uni.showToast({ title: '需重新分配剧本', icon: 'none' })
 
   uni.showModal({
     title: '准备开局',
-    content: `GameID: ${targetGameId}\n确定要开始《${liveTeam.team_name}》吗？`,
-    confirmText: '🚀 立即开始',
+    content: `开始《${liveTeam.team_name}》？`,
+    confirmText: '开始',
     confirmColor: '#10B981',
     success: async (res) => {
       if (res.confirm) {
-        uni.showLoading({ title: '正在启动引擎...', mask: true })
+        uni.showLoading({ title: '启动中...' })
         try {
           await gameStore.startGame(targetGameId)
-          // 成功！
           uni.hideLoading()
-          uni.showToast({ title: '游戏启动成功！', icon: 'success' })
+          uni.showToast({ title: '成功', icon: 'success' })
         }
         catch (error) {
           uni.hideLoading()
-          uni.showModal({
-            title: '启动失败',
-            content: `服务端拒绝: ${error}`,
-            showCancel: false,
-          })
+          uni.showModal({ title: '失败', content: `${error}`, showCancel: false })
         }
       }
     },
   })
 }
 
-// --- 列表逻辑 (保持不变) ---
-
-watch(currentView, (newVal) => {
-  if (newVal === 'teams' && teamList.value.length === 0) {
-    fetchTeamList(true)
-  }
-})
+function handleManualRefresh() {
+  isRefreshing.value = true
+  fetchTeamList(true, false).finally(() => {
+    setTimeout(() => {
+      isRefreshing.value = false
+    }, 500)
+    uni.showToast({ title: '已刷新', icon: 'none' })
+  })
+}
 
 async function fetchTeamList(reset = false, silent = false) {
-  if (reset) {
+  if (reset)
     page.value = 1
-    if (!silent) {
-      teamList.value = []
-      isLoading.value = true
-    }
+  if (!silent && reset) {
+    teamList.value = []
+    isLoading.value = true
   }
   try {
     const res = await getTeamListAPI({ page: page.value, size: pageSize.value })
-    let newItems = []
-    if (res && res.data && Array.isArray(res.data.items)) {
-      newItems = res.data.items
-      total.value = res.data.total || 0
-    }
-    else if (res && Array.isArray(res.items)) {
-      newItems = res.items
-      total.value = res.total || 0
-    }
-    teamList.value = reset ? newItems : [...teamList.value, ...newItems]
+    const items = res.data?.items || res.items || []
+    total.value = res.data?.total || res.total || 0
+    teamList.value = reset ? items : [...teamList.value, ...items]
   }
-  catch (error) {
-    console.error(error)
-  }
+  catch (error) { console.error(error) }
   finally {
     isLoading.value = false
     uni.stopPullDownRefresh()
@@ -202,26 +239,15 @@ async function fetchTeamList(reset = false, silent = false) {
 }
 
 onPullDownRefresh(() => {
-  if (currentView.value === 'teams')
-    fetchTeamList(true)
-  else setTimeout(() => uni.stopPullDownRefresh(), 1000)
+  currentView.value === 'teams' ? fetchTeamList(true) : setTimeout(() => uni.stopPullDownRefresh(), 1000)
 })
-
 onReachBottom(() => {
-  if (currentView.value === 'teams' && teamList.value.length < total.value) {
+  if (teamList.value.length < total.value) {
     page.value++
     fetchTeamList()
   }
 })
 
-function getTimeColor(time) {
-  if (time <= 5)
-    return 'bg-red-100 text-red-500'
-  return 'bg-gray-100 text-gray-600'
-}
-function getTagColor(type) {
-  return type === 'warning' ? 'bg-red-50 border-red-100 text-red-500' : 'bg-orange-50 border-orange-100 text-orange-500'
-}
 function getStatusConfig(status) {
   const map = {
     0: { color: 'text-gray-500', bg: 'bg-gray-100', text: '组建中' },
@@ -243,23 +269,14 @@ function getStatusConfig(status) {
         <view class="flex items-center gap-1 bg-indigo-100 text-indigo-600 text-[10px] px-1.5 py-0.5 rounded font-bold">
           <view v-if="gameStore.isWsConnected" class="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse"></view>
           <view v-else class="w-1.5 h-1.5 rounded-full bg-red-500"></view>
-          {{ gameStore.isWsConnected ? 'LIVE' : 'OFFLINE' }}
+          {{ gameStore.isWsConnected ? 'LIVE' : 'OFF' }}
         </view>
       </view>
-
       <view class="flex bg-gray-100 p-1 rounded-full relative">
-        <view
-          class="px-4 py-1.5 rounded-full text-xs font-bold transition-all duration-300 z-10"
-          :class="currentView === 'dashboard' ? 'text-indigo-600' : 'text-gray-500'"
-          @click="currentView = 'dashboard'"
-        >
+        <view class="px-4 py-1.5 rounded-full text-xs font-bold z-10" :class="currentView === 'dashboard' ? 'text-indigo-600' : 'text-gray-500'" @click="currentView = 'dashboard'">
           📊 态势
         </view>
-        <view
-          class="px-4 py-1.5 rounded-full text-xs font-bold transition-all duration-300 z-10"
-          :class="currentView === 'teams' ? 'text-indigo-600' : 'text-gray-500'"
-          @click="currentView = 'teams'"
-        >
+        <view class="px-4 py-1.5 rounded-full text-xs font-bold z-10" :class="currentView === 'teams' ? 'text-indigo-600' : 'text-gray-500'" @click="currentView = 'teams'">
           👥 队伍
         </view>
         <view class="absolute top-1 bottom-1 w-[50%] bg-white rounded-full shadow-sm transition-all duration-300" :style="{ left: currentView === 'dashboard' ? '4px' : 'calc(50% - 4px)' }"></view>
@@ -268,123 +285,38 @@ function getStatusConfig(status) {
 
     <view class="p-4 space-y-4">
       <template v-if="currentView === 'dashboard'">
-        <view class="bg-gradient-to-r from-blue-600 to-indigo-600 rounded-2xl p-5 shadow-lg text-white relative overflow-hidden animate-fade-in">
-          <view class="absolute -right-6 -top-6 w-32 h-32 bg-white opacity-10 rounded-full blur-2xl"></view>
-          <view class="relative z-10 flex justify-between items-start">
-            <view>
-              <view class="flex items-center gap-2 mb-1">
-                <text class="text-xl font-bold">
-                  📍 王记粮仓 (#042)
-                </text>
-              </view>
-              <text class="opacity-90 text-sm">
-                AI流量分发开启
-              </text>
-            </view>
-          </view>
-        </view>
-
-        <view class="grid grid-cols-2 gap-3 animate-fade-in">
-          <view class="bg-white rounded-xl p-4 shadow-sm flex flex-col justify-between">
-            <text class="text-gray-500 text-xs mb-2">
-              👥 当前排队
-            </text>
-            <view class="flex items-baseline gap-1">
-              <text class="text-3xl font-black text-gray-900">
-                5
-              </text>
-              <text class="text-gray-400 text-sm">
-                / 20人
-              </text>
-            </view>
-            <view class="w-full bg-gray-100 h-1.5 rounded-full overflow-hidden mt-2">
-              <view class="bg-green-500 h-full rounded-full" style="width: 25%"></view>
-            </view>
-          </view>
-          <view class="bg-white rounded-xl p-4 shadow-sm flex flex-col justify-between">
-            <text class="text-gray-500 text-xs mb-2">
-              🕒 预计客流
-            </text>
-            <view class="flex items-baseline gap-1">
-              <text class="text-3xl font-black text-indigo-600">
-                17
-              </text>
-              <text class="text-gray-400 text-sm">
-                人
-              </text>
-            </view>
-            <view class="bg-red-50 text-red-500 text-[10px] px-2 py-0.5 rounded w-max mt-2">
-              ⚠️ 含特殊需求
-            </view>
-          </view>
-        </view>
-
-        <view class="bg-white rounded-2xl p-4 shadow-sm min-h-[300px] animate-fade-in">
-          <view class="flex justify-between items-center mb-4">
-            <text class="font-bold text-gray-800 text-lg">
-              流量预报
-            </text>
-            <view class="bg-blue-100 text-blue-600 text-xs px-2 py-0.5 rounded-full font-medium">
-              ● 实时
-            </view>
-          </view>
-          <view class="space-y-4">
-            <view v-for="item in flowList" :key="item.id" class="flex items-center gap-3 pb-3 border-b border-gray-50 last:border-0 last:pb-0">
-              <view class="w-12 h-12 rounded-full flex items-center justify-center font-bold text-sm" :class="getTimeColor(item.arrivalTime)">
-                {{ item.arrivalTime }}m
-              </view>
-              <view class="flex-1">
-                <view class="flex items-baseline gap-2">
-                  <text class="font-bold text-gray-900 text-base">
-                    {{ item.teamName }}
-                  </text>
-                  <text class="text-gray-400 text-sm">
-                    ({{ item.peopleCount }}人)
-                  </text>
-                </view>
-                <view class="text-gray-500 text-xs mt-0.5">
-                  任务: {{ item.taskName }}
-                </view>
-                <view v-if="item.tags" class="mt-1.5 flex gap-1">
-                  <view v-for="(tag, tagIdx) in item.tags" :key="tagIdx" class="text-[10px] px-1.5 py-0.5 rounded border" :class="getTagColor(tag.type)">
-                    {{ tag.label }}
-                  </view>
-                </view>
-              </view>
-            </view>
-          </view>
+        <view class="bg-gradient-to-r from-blue-600 to-indigo-600 rounded-2xl p-5 shadow-lg text-white">
+          <text class="text-xl font-bold">
+            📍 王记粮仓 (#042)
+          </text>
         </view>
       </template>
 
       <template v-else>
-        <view class="flex gap-2 animate-fade-in">
-          <view class="flex-1 bg-white h-11 rounded-2xl flex items-center px-4 shadow-sm text-gray-400 text-sm">
-            🔍 搜索队伍...
-          </view>
+        <view class="flex justify-between items-center mb-2">
+          <text class="text-sm text-gray-500 font-bold ml-1">
+            当前队伍
+          </text>
+          <button class="bg-white border border-gray-200 text-indigo-600 px-3 py-1.5 rounded-lg text-xs font-bold shadow-sm flex items-center gap-1" @click="handleManualRefresh">
+            <text :class="isRefreshing ? 'animate-spin' : ''">
+              🔄
+            </text> 刷新
+          </button>
         </view>
 
         <view class="space-y-5">
-          <view v-if="isLoading && teamList.length === 0" class="py-10 text-center text-gray-400 text-xs">
-            获取实时数据中...
-          </view>
-          <view v-else-if="teamList.length === 0" class="py-10 text-center text-gray-400 text-xs">
-            暂无队伍信息
-          </view>
-
           <view v-for="team in teamList" :key="team.team_id" class="bg-white rounded-[24px] shadow-xl overflow-hidden border border-gray-50 animate-slide-up">
             <view class="p-5 flex justify-between items-start bg-gradient-to-br from-white to-gray-50">
-              <view>
-                <view class="flex items-center gap-2 mb-1">
-                  <text class="text-xl font-black text-gray-900">
-                    {{ team.team_name }}
-                  </text>
-                  <view :class="[getStatusConfig(team.current_status).bg, getStatusConfig(team.current_status).color]" class="px-2 py-0.5 rounded-full text-[10px] font-bold">
-                    {{ getStatusConfig(team.current_status).text }}
-                  </view>
+              <view class="flex items-center gap-2">
+                <text class="text-xl font-black text-gray-900">
+                  {{ team.team_name }}
+                </text>
+                <view :class="[getStatusConfig(team.current_status).bg, getStatusConfig(team.current_status).color]" class="px-2 py-0.5 rounded-full text-[10px] font-bold">
+                  {{ getStatusConfig(team.current_status).text }}
                 </view>
               </view>
-              <view class="bg-indigo-600 px-3 py-2 rounded-xl text-center shadow-md shadow-indigo-100">
-                <text class="block text-[8px] text-white/70 font-bold tracking-widest mb-0.5">
+              <view class="bg-indigo-600 px-3 py-2 rounded-xl text-center shadow-md">
+                <text class="block text-[8px] text-white/70 font-bold mb-0.5">
                   队伍码
                 </text>
                 <text class="text-lg font-black text-white font-mono">
@@ -393,84 +325,76 @@ function getStatusConfig(status) {
               </view>
             </view>
 
-            <view class="px-5 py-4 border-t border-gray-50">
-              <view class="flex justify-between items-center mb-3">
-                <view class="flex -space-x-2">
-                  <view v-for="i in Math.min(3, gameStore.roomStates[team.team_id]?.memberCount || team.size)" :key="i" class="w-8 h-8 rounded-full border-2 border-white bg-gray-100 flex items-center justify-center text-xs">
-                    👤
-                  </view>
-                  <view v-if="(gameStore.roomStates[team.team_id]?.memberCount || team.size) > 3" class="w-8 h-8 rounded-full border-2 border-white bg-indigo-50 text-indigo-600 flex items-center justify-center text-[10px] font-bold">
-                    +{{ (gameStore.roomStates[team.team_id]?.memberCount || team.size) - 3 }}
-                  </view>
-                </view>
-                <view class="text-right">
-                  <text class="text-xs text-gray-400 block">
-                    实时在线人数
-                  </text>
-                  <text class="text-lg font-black text-indigo-600">
-                    {{ gameStore.roomStates[team.team_id]?.memberCount || team.size }}
-                    <text class="text-[10px] text-gray-400 font-normal">
-                      / 5
-                    </text>
-                  </text>
+            <view class="px-5 py-4 border-t border-gray-50 flex justify-between items-center">
+              <view class="flex -space-x-2">
+                <view class="w-8 h-8 rounded-full bg-gray-100 border-2 border-white flex items-center justify-center text-xs">
+                  👤
                 </view>
               </view>
+              <text class="text-lg font-black text-indigo-600">
+                {{ gameStore.roomStates[team.team_id]?.memberCount || team.size }} <text class="text-xs text-gray-400 font-normal">
+                  / 5
+                </text>
+              </text>
             </view>
 
             <view class="px-5 py-4 bg-gray-50/50 flex gap-3">
-              <button
-                v-if="!isJoined(team.team_id)"
-                class="flex-1 bg-white border border-indigo-200 text-indigo-600 rounded-xl py-3 text-sm font-bold shadow-sm flex items-center justify-center gap-1 active:scale-95"
-                @click="handleJoinRoom(team)"
-              >
+              <button v-if="!isJoined(team.team_id)" class="flex-1 bg-white border border-indigo-200 text-indigo-600 rounded-xl py-3 text-sm font-bold shadow-sm" @click="handleJoinRoom(team)">
                 👉 进入房间
               </button>
 
               <template v-else>
-                <button
-                  v-if="team.current_status === 0"
-                  class="flex-1 bg-indigo-600 text-white rounded-xl py-3 text-sm font-bold shadow-lg shadow-indigo-100 flex items-center justify-center gap-1 active:scale-95"
-                  @click="handleAssignScript(team)"
-                >
+                <button v-if="team.current_status === 0" class="flex-1 bg-indigo-600 text-white rounded-xl py-3 text-sm font-bold shadow-lg" @click="handleAssignScript(team)">
                   🎭 分配剧本
                 </button>
-
                 <template v-else-if="team.current_status === 1">
-                  <button
-                    class="flex-1 bg-blue-500 text-white rounded-xl py-3 text-sm font-bold shadow-lg shadow-emerald-100 flex items-center justify-center gap-2 active:scale-95"
-                    @click="handleAssignScript(team)"
-                  >
-                    🔄 选择剧本
+                  <button class="flex-1 bg-blue-500 text-white rounded-xl py-3 text-sm font-bold shadow-lg" @click="handleAssignScript(team)">
+                    🔄 重选
                   </button>
-                  <button
-                    class="flex-1 bg-emerald-500 text-white rounded-xl py-3 text-sm font-bold shadow-lg shadow-emerald-100 flex items-center justify-center gap-2 active:scale-95"
-                    @click="handleStartGame(team)"
-                  >
-                    🚀 开始游戏
+                  <button class="flex-1 bg-emerald-500 text-white rounded-xl py-3 text-sm font-bold shadow-lg" @click="handleStartGame(team)">
+                    🚀 开始
                   </button>
                 </template>
 
-                <button
-                  v-else-if="team.current_status === 2"
-                  class="flex-1 bg-orange-500 text-white rounded-xl py-3 text-sm font-bold shadow-lg shadow-orange-100 flex items-center justify-center gap-2 active:scale-95"
-                >
-                  🎮 游戏进行中
-                </button>
+                <template v-else-if="team.current_status === 2">
+                  <view class="flex-1 flex gap-2">
+                    <button
+                      class="flex-1 rounded-xl py-3 text-sm font-bold shadow-sm flex items-center justify-center gap-1 active:scale-95 transition-all"
+                      :class="getPendingConfirmMechanism(team.team_id) ? 'bg-orange-500 text-white shadow-orange-200 animate-pulse' : 'bg-white border border-gray-200 text-gray-600'"
+                      @click="handleTaskManage(team)"
+                    >
+                      <text>{{ getPendingConfirmMechanism(team.team_id) ? '🔔 确认' : '⚙️ 管理' }}</text>
+                    </button>
+                    <button
+                      class="flex-[1.5] bg-indigo-600 text-white rounded-xl py-3 text-sm font-bold shadow-lg shadow-indigo-100 flex items-center justify-center gap-2 active:scale-95"
+                      @click="handleOpenConsole(team)"
+                    >
+                      <template v-if="isJoined(team.team_id) && gameStore.currentTask">
+                        <view class="flex flex-col items-start leading-none text-left">
+                          <text class="text-[9px] opacity-70 font-normal">
+                            进行中
+                          </text>
+                          <text class="truncate max-w-[5em]">
+                            {{ gameStore.currentTask.game_name || '任务' }}
+                          </text>
+                        </view>
+                        <text class="text-xs">
+                          👉
+                        </text>
+                      </template>
+                      <template v-else>
+                        🎮 控制台
+                      </template>
+                    </button>
+                  </view>
+                </template>
 
-                <button
-                  v-else-if="team.current_status === 3"
-                  class="flex-1 bg-gray-200 text-gray-500 rounded-xl py-3 text-sm font-bold flex items-center justify-center"
-                  disabled
-                >
-                  🏁 游戏已结束
+                <button v-else-if="team.current_status === 3" class="flex-1 bg-gray-200 text-gray-500 rounded-xl py-3 text-sm font-bold" disabled>
+                  🏁 已结束
                 </button>
               </template>
             </view>
           </view>
-        </view>
-
-        <view v-if="teamList.length > 0" class="text-center py-8 text-gray-400 text-xs" @click="fetchTeamList()">
-          {{ teamList.length >= total ? '- 数据已全部同步 -' : '上拉加载更多历史队伍' }}
         </view>
       </template>
     </view>
@@ -479,25 +403,36 @@ function getStatusConfig(status) {
 </template>
 
 <style scoped>
-button {
-  margin: 0;
-  line-height: 1.5;
-  transition: transform 0.1s;
-}
-button:active {
-  transform: scale(0.97);
-  opacity: 0.9;
-}
 button::after {
   border: none;
 }
-
-.shadow-xl {
-  box-shadow:
-    0 15px 30px -5px rgba(0, 0, 0, 0.05),
-    0 8px 12px -7px rgba(0, 0, 0, 0.03);
+button:active {
+  transform: scale(0.97);
 }
-
+.animate-pulse {
+  animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.7;
+  }
+}
+.animate-spin {
+  animation: spin 1s linear infinite;
+  display: inline-block;
+}
+@keyframes spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
 .animate-slide-up {
   animation: slideUp 0.6s cubic-bezier(0.16, 1, 0.3, 1) both;
 }
@@ -510,16 +445,5 @@ button::after {
     transform: translateY(0);
     opacity: 1;
   }
-}
-@keyframes fadeIn {
-  from {
-    opacity: 0;
-  }
-  to {
-    opacity: 1;
-  }
-}
-.animate-fade-in {
-  animation: fadeIn 0.4s ease-out;
 }
 </style>
