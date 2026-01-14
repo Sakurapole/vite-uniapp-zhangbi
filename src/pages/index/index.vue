@@ -730,9 +730,9 @@ onReachBottom(() => {
 
             <template v-else>
               <template v-if="team.current_status === 0 || team.current_status === 1">
-                <view class="flex gap-6">
+                <view class="flex gap-14">
                   <button
-                    class="flex-1 bg-indigo-600 text-white rounded-xl py-3 text-sm font-bold shadow-lg active:scale-95 transition-transform flex items-center justify-center gap-1"
+                    class="flex-1 bg-indigo-600 text-white rounded-xl py-3 px-8 text-sm font-bold shadow-lg active:scale-95 transition-transform flex items-center justify-center gap-1"
                     :class="team.current_status === 1 ? 'bg-blue-500' : 'bg-indigo-600'"
                     @click="handleAssignScript(team)"
                   >
@@ -741,17 +741,10 @@ onReachBottom(() => {
 
                   <button
                     v-if="team.current_status === 1"
-                    class="flex-1 bg-emerald-500 text-white rounded-xl py-3 text-sm font-bold shadow-lg shadow-emerald-200 active:scale-95 transition-transform flex items-center justify-center gap-1"
+                    class="flex-1 bg-emerald-500 text-white rounded-xl py-3 px-8 text-sm font-bold shadow-lg shadow-emerald-200 active:scale-95 transition-transform flex items-center justify-center gap-1"
                     @click="handleStartGame(team)"
                   >
                     <text>开始游戏</text>
-                  </button>
-                  <button
-                    v-if="team.current_status === 1"
-                    class="flex-1 bg-blue-500 text-white rounded-xl py-3 text-sm font-bold shadow-lg shadow-emerald-200 active:scale-95 transition-transform flex items-center justify-center gap-1"
-                    @click="handleGetTask(team)"
-                  >
-                    <text>同步任务</text>
                   </button>
                 </view>
               </template>
